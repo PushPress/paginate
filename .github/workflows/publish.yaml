@@ -1,0 +1,71 @@
+name: Publish package to GitHub Packages
+on:
+  push:
+    branches:
+      - main
+jobs:
+  Publish:
+    runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: "rabbitmq:latest"
+        ports:
+          - "5672:5672"
+          - "15672:15672"
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9.3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: "22.12"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@pushpress"
+      - run: |
+          git config --global user.email github.actions@pushpress.com
+          git config --global user.name "github"
+      - name: Install Deps
+        run: pnpm i --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Test
+        run: pnpm test
+      - name: Pre-Publish Build
+        run: |
+          npm run build
+      - name: "Major Version Bump"
+        if: contains(github.event.head_commit.message, 'MAJOR')
+        run: |
+          echo "Bumping minor version"
+          npm version major
+      - name: "Minor Version Bump"
+        if: contains(github.event.head_commit.message, 'MINOR')
+        run: |
+          echo "Bumping minor version"
+          npm version minor
+      - name: "Patch"
+        if: "!contains(github.event.head_commit.message, 'MINOR') && !contains(github.event.head_commit.message, 'MAJOR') && !contains(github.event.head_commit.message, 'SKIP_PUBLISH')"
+        run: |
+          echo "PATCHING"
+          npm version patch
+      - name: Build docs
+        if: "!contains(github.event.head_commit.message, 'SKIP_PUBLISH')"
+        run: |
+          pnpm gen:docs
+          git add .
+          git commit --amend --no-edit
+      - name: "Publish"
+        if: "!contains(github.event.head_commit.message, 'SKIP_PUBLISH')"
+        run: npm publish
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}

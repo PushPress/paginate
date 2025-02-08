@@ -1,0 +1,6 @@
+.env
+.github
+src
+tsconfig.json
+data
+docs

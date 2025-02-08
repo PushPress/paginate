@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+    branches:
+      - "**"
+      - "!main"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9.3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: "22.12"
+          cache: "pnpm"
+      - run: pnpm install
+      - run: pnpm run lint && pnpm run build && pnpm run test

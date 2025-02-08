@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "moduleDetection": "force",
+    /* Strictness */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "target": "es2020",
+    "module": "commonjs",
+    "outDir": "dist",
+    "lib": ["ES2023"],
+    "declaration": true, // Generate .d.ts files
+    "declarationMap": true, // Generate .d.ts.map files
+    "sourceMap": true, // Generate .js.map files for JavaScript
+    "inlineSources": true
+  },
+  "include": ["src", "eslint.config.mjs"],
+  "exclude": ["node_modules"]
+}
