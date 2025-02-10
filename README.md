@@ -1,6 +1,6 @@
 # Paginate
 
-Create a type-safe async iterator for paginated data sources that supports both offset and cursor-based pagination with robust error handling.
+Idoimatic Typescript API for iterating over any paginated data.
 
 ## Motivation
 
@@ -8,10 +8,10 @@ When working with paginated APIs or data sources, developers often need to:
 
 1. Handle both offset-based and cursor-based pagination
 2. Deal with errors gracefully without breaking the entire data fetch
-3. Write lots of boilerplate pagination logic
+3. Repeat boilerplate pagination logic
 4. Manage state between pagination requests
 
-This library solves these problems by providing a simple async iterator interface that handles all the complexity of pagination while giving you complete control over error handling.
+This library solves these problems by providing a simple async iterator that handles all the complexity of pagination while giving you complete control over error handling.
 
 ## Installation
 
@@ -235,8 +235,6 @@ It must return (or resolve to):
 - `true`: Continue pagination
 - `false`: Stop pagination
 
-```
-
 ## Best Practices
 
 1. **Choose the right pagination strategy**:
@@ -256,4 +254,3 @@ It must return (or resolve to):
 4. **Use error callbacks effectively**:
    - Log errors for monitoring and debugging
    - Clean up resources when pagination stops
-```
