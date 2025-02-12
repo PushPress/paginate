@@ -27,7 +27,7 @@ export type ErrorPolicy =
 
 type OnPageOptions = {
   offset?: number;
-  cursor?: string | null;
+  cursor?: string | number | null;
 };
 
 /**
