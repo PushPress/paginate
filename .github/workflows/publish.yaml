@@ -55,12 +55,6 @@ jobs:
         run: |
           echo "PATCHING"
           npm version patch
-      - name: Build docs
-        if: "!contains(github.event.head_commit.message, 'SKIP_PUBLISH')"
-        run: |
-          pnpm gen:docs
-          git add .
-          git commit --amend --no-edit
       - name: "Publish"
         if: "!contains(github.event.head_commit.message, 'SKIP_PUBLISH')"
         run: npm publish
