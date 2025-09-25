@@ -1,19 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { 
-  paginate, 
+import {
+  paginate,
   FluentAsyncIterable,
-  toArray, 
-  toSet, 
-  toMap, 
-  forEach, 
-  filter, 
-  map, 
-  take, 
-  skip, 
-  reduce, 
-  find, 
-  some, 
-  every 
+  toArray,
+  toSet,
+  toMap,
+  forEach,
+  filter,
+  map,
+  take,
+  skip,
+  reduce,
+  find,
+  some,
+  every,
 } from "../src/index";
 import type { PaginationCallback } from "../src/index";
 
@@ -100,6 +100,178 @@ describe("paginate", () => {
 
     expect(result).toEqual([]);
     expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it("should paginate through all items with page strategy (1-indexed)", async () => {
+    const items = Array.from({ length: 25 }, (_, i) => `item-${i}`);
+    const callback = vi.fn(async ({ limit, page = 1 }) => {
+      const offset = (page - 1) * limit;
+      const pageItems = items.slice(offset, offset + limit);
+      return {
+        items: pageItems,
+        pageInfo: {
+          hasNextPage: offset + limit < items.length,
+        },
+      };
+    });
+
+    const pagination = paginate(callback, {
+      strategy: "page",
+      limit: 10,
+      errorPolicy: { type: "throw" },
+    });
+    const result = [] as string[];
+
+    for await (const item of pagination) {
+      result.push(item);
+    }
+
+    expect(result).toEqual(items);
+    expect(callback).toHaveBeenCalledTimes(3);
+    expect(callback).toHaveBeenNthCalledWith(1, { limit: 10, page: 1 });
+    expect(callback).toHaveBeenNthCalledWith(2, { limit: 10, page: 2 });
+    expect(callback).toHaveBeenNthCalledWith(3, { limit: 10, page: 3 });
+  });
+
+  it("should handle initialPage correctly", async () => {
+    const callback = vi.fn(async ({ page = 1 }) => ({
+      items: [`item-page-${page}`],
+      pageInfo: {
+        hasNextPage: false,
+      },
+    }));
+
+    const pagination = paginate(callback, {
+      strategy: "page",
+      limit: 10,
+      initialPage: 3,
+      errorPolicy: { type: "break" },
+    });
+
+    const result = [] as string[];
+    for await (const item of pagination) {
+      result.push(item);
+    }
+
+    expect(callback).toHaveBeenCalledWith({ limit: 10, page: 3 });
+    expect(result).toEqual(["item-page-3"]);
+  });
+
+  it("should handle page strategy with continue error policy", async () => {
+    const items = Array.from({ length: 15 }, (_, i) => `item-${i}`);
+    let callCount = 0;
+    const callback = vi.fn(async ({ limit, page = 1 }) => {
+      callCount++;
+      if (callCount === 2) {
+        throw new Error("Page 2 error");
+      }
+      const offset = (page - 1) * limit;
+      const pageItems = items.slice(offset, offset + limit);
+      return {
+        items: pageItems,
+        pageInfo: {
+          hasNextPage: offset + limit < items.length,
+        },
+      };
+    });
+
+    const pagination = paginate(callback, {
+      strategy: "page",
+      limit: 5,
+      errorPolicy: { type: "continue", maxErrorCount: 1 },
+    });
+    const result = [] as string[];
+
+    for await (const item of pagination) {
+      result.push(item);
+    }
+
+    // Should get items from page 1, skip page 2 due to error, then stop due to max error count
+    expect(result).toEqual([
+      "item-0",
+      "item-1",
+      "item-2",
+      "item-3",
+      "item-4", // page 1 only
+    ]);
+    expect(callback).toHaveBeenCalledTimes(2);
+    expect(callback).toHaveBeenNthCalledWith(1, { limit: 5, page: 1 });
+    expect(callback).toHaveBeenNthCalledWith(2, { limit: 5, page: 2 });
+  });
+
+  it("should handle page strategy with hooks", async () => {
+    const items = Array.from({ length: 15 }, (_, i) => `item-${i}`);
+    const callback = vi.fn(async ({ limit, page = 1 }) => {
+      const offset = (page - 1) * limit;
+      const pageItems = items.slice(offset, offset + limit);
+      return {
+        items: pageItems,
+        pageInfo: {
+          hasNextPage: offset + limit < items.length,
+        },
+      };
+    });
+
+    const onPageHook = vi.fn();
+    const onReturnHook = vi.fn();
+
+    const pagination = paginate(callback, {
+      strategy: "page",
+      limit: 5,
+      errorPolicy: { type: "throw" },
+      hooks: {
+        onPage: onPageHook,
+        onReturn: onReturnHook,
+      },
+    });
+    const result = [] as string[];
+
+    for await (const item of pagination) {
+      result.push(item);
+    }
+
+    expect(result).toEqual(items);
+    expect(onPageHook).toHaveBeenCalledTimes(3);
+    expect(onPageHook).toHaveBeenNthCalledWith(1, { page: 1, offset: undefined, cursor: undefined });
+    expect(onPageHook).toHaveBeenNthCalledWith(2, { page: 2, offset: undefined, cursor: undefined });
+    expect(onPageHook).toHaveBeenNthCalledWith(3, { page: 3, offset: undefined, cursor: undefined });
+    expect(onReturnHook).toHaveBeenCalledTimes(1);
+  });
+
+  it("should provide correct type safety with function overloads", async () => {
+    const callback = vi.fn(async ({ limit, offset, page, cursor }) => ({
+      items: [`test`],
+      pageInfo: { hasNextPage: false },
+    }));
+
+    // Test offset strategy - should only allow initialOffset
+    const offsetPagination = paginate(callback, {
+      strategy: "offset",
+      limit: 10,
+      initialOffset: 5, // This should be allowed
+      errorPolicy: { type: "throw" },
+    });
+
+    // Test page strategy - should only allow initialPage
+    const pagePagination = paginate(callback, {
+      strategy: "page",
+      limit: 10,
+      initialPage: 2, // This should be allowed
+      errorPolicy: { type: "throw" },
+    });
+
+    // Test cursor strategy - should only allow initialCursor
+    const cursorPagination = paginate(callback, {
+      strategy: "cursor",
+      limit: 10,
+      initialCursor: "cursor123", // This should be allowed
+      errorPolicy: { type: "throw" },
+    });
+
+    // All should work without TypeScript errors
+    expect(offsetPagination).toBeDefined();
+    expect(pagePagination).toBeDefined();
+    expect(cursorPagination).toBeDefined();
   });
 
   it("should paginate through all items with cursor strategy", async () => {
@@ -393,7 +565,7 @@ describe("paginate", () => {
         // Verify the cursor progression
         expect(callback).toHaveBeenNthCalledWith(1, {
           limit: 10,
-          cursor: undefined,
+          cursor: null,
         });
         expect(callback).toHaveBeenNthCalledWith(2, {
           limit: 10,
@@ -603,7 +775,7 @@ describe("paginate", () => {
       expect(onPage).toHaveBeenCalledTimes(3);
       expect(onPage).toHaveBeenNthCalledWith(
         1,
-        expect.objectContaining({ cursor: undefined }),
+        { cursor: undefined, offset: undefined, page: undefined },
       );
       expect(onPage).toHaveBeenNthCalledWith(
         2,
@@ -748,17 +920,17 @@ describe("utility functions", () => {
     it("should collect all items into an array", async () => {
       const items = ["a", "b", "c", "d", "e"];
       const iterator = createSimpleIterator(items);
-      
+
       const result = await toArray(iterator);
-      
+
       expect(result).toEqual(items);
     });
 
     it("should handle empty iterables", async () => {
       const iterator = createSimpleIterator([]);
-      
+
       const result = await toArray(iterator);
-      
+
       expect(result).toEqual([]);
     });
   });
@@ -767,18 +939,18 @@ describe("utility functions", () => {
     it("should collect unique items into a Set", async () => {
       const items = ["a", "b", "a", "c", "b", "d"];
       const iterator = createSimpleIterator(items);
-      
+
       const result = await toSet(iterator);
-      
+
       expect(result).toEqual(new Set(["a", "b", "c", "d"]));
       expect(result.size).toBe(4);
     });
 
     it("should handle empty iterables", async () => {
       const iterator = createSimpleIterator([]);
-      
+
       const result = await toSet(iterator);
-      
+
       expect(result.size).toBe(0);
     });
   });
@@ -788,9 +960,9 @@ describe("utility functions", () => {
       const users = [
         { id: "1", name: "Alice" },
         { id: "2", name: "Bob" },
-        { id: "3", name: "Charlie" }
+        { id: "3", name: "Charlie" },
       ];
-      
+
       const iterator = paginate(
         async ({ limit, offset = 0 }) => {
           const pageItems = users.slice(offset, offset + limit);
@@ -807,9 +979,9 @@ describe("utility functions", () => {
           errorPolicy: { type: "throw" },
         },
       );
-      
-      const result = await toMap(iterator, user => user.id);
-      
+
+      const result = await toMap(iterator, (user) => user.id);
+
       expect(result.get("1")).toEqual({ id: "1", name: "Alice" });
       expect(result.get("2")).toEqual({ id: "2", name: "Bob" });
       expect(result.get("3")).toEqual({ id: "3", name: "Charlie" });
@@ -819,9 +991,9 @@ describe("utility functions", () => {
     it("should handle duplicate keys by keeping last value", async () => {
       const items = [
         { id: "1", value: "first" },
-        { id: "1", value: "second" }
+        { id: "1", value: "second" },
       ];
-      
+
       const iterator = paginate(
         async ({ limit, offset = 0 }) => {
           const pageItems = items.slice(offset, offset + limit);
@@ -838,9 +1010,9 @@ describe("utility functions", () => {
           errorPolicy: { type: "throw" },
         },
       );
-      
-      const result = await toMap(iterator, item => item.id);
-      
+
+      const result = await toMap(iterator, (item) => item.id);
+
       expect(result.get("1")).toEqual({ id: "1", value: "second" });
       expect(result.size).toBe(1);
     });
@@ -852,12 +1024,12 @@ describe("utility functions", () => {
       const iterator = createSimpleIterator(items);
       const results: string[] = [];
       const indices: number[] = [];
-      
+
       await forEach(iterator, (item, index) => {
         results.push(item);
         indices.push(index);
       });
-      
+
       expect(results).toEqual(items);
       expect(indices).toEqual([0, 1, 2]);
     });
@@ -866,12 +1038,12 @@ describe("utility functions", () => {
       const items = ["a", "b"];
       const iterator = createSimpleIterator(items);
       const results: string[] = [];
-      
+
       await forEach(iterator, async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         results.push(item.toUpperCase());
       });
-      
+
       expect(results).toEqual(["A", "B"]);
     });
   });
@@ -880,33 +1052,33 @@ describe("utility functions", () => {
     it("should filter items based on predicate", async () => {
       const items = ["apple", "banana", "cherry", "date"];
       const iterator = createSimpleIterator(items);
-      
-      const filtered = filter(iterator, item => item.length > 5);
+
+      const filtered = filter(iterator, (item) => item.length > 5);
       const result = await toArray(filtered);
-      
+
       expect(result).toEqual(["banana", "cherry"]);
     });
 
     it("should provide index to predicate", async () => {
       const items = ["a", "b", "c", "d"];
       const iterator = createSimpleIterator(items);
-      
+
       const filtered = filter(iterator, (item, index) => index % 2 === 0);
       const result = await toArray(filtered);
-      
+
       expect(result).toEqual(["a", "c"]);
     });
 
     it("should handle async predicates", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const filtered = filter(iterator, async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         return item !== "b";
       });
       const result = await toArray(filtered);
-      
+
       expect(result).toEqual(["a", "c"]);
     });
   });
@@ -915,33 +1087,33 @@ describe("utility functions", () => {
     it("should transform items", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
-      const mapped = map(iterator, item => item.toUpperCase());
+
+      const mapped = map(iterator, (item) => item.toUpperCase());
       const result = await toArray(mapped);
-      
+
       expect(result).toEqual(["A", "B", "C"]);
     });
 
     it("should provide index to transform function", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const mapped = map(iterator, (item, index) => `${index}:${item}`);
       const result = await toArray(mapped);
-      
+
       expect(result).toEqual(["0:a", "1:b", "2:c"]);
     });
 
     it("should handle async transform functions", async () => {
       const items = ["a", "b"];
       const iterator = createSimpleIterator(items);
-      
+
       const mapped = map(iterator, async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         return item.repeat(2);
       });
       const result = await toArray(mapped);
-      
+
       expect(result).toEqual(["aa", "bb"]);
     });
   });
@@ -950,30 +1122,30 @@ describe("utility functions", () => {
     it("should take first n items", async () => {
       const items = ["a", "b", "c", "d", "e"];
       const iterator = createSimpleIterator(items);
-      
+
       const taken = take(iterator, 3);
       const result = await toArray(taken);
-      
+
       expect(result).toEqual(["a", "b", "c"]);
     });
 
     it("should handle taking more items than available", async () => {
       const items = ["a", "b"];
       const iterator = createSimpleIterator(items);
-      
+
       const taken = take(iterator, 5);
       const result = await toArray(taken);
-      
+
       expect(result).toEqual(["a", "b"]);
     });
 
     it("should handle zero or negative count", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const taken = take(iterator, 0);
       const result = await toArray(taken);
-      
+
       expect(result).toEqual([]);
     });
   });
@@ -982,30 +1154,30 @@ describe("utility functions", () => {
     it("should skip first n items", async () => {
       const items = ["a", "b", "c", "d", "e"];
       const iterator = createSimpleIterator(items);
-      
+
       const skipped = skip(iterator, 2);
       const result = await toArray(skipped);
-      
+
       expect(result).toEqual(["c", "d", "e"]);
     });
 
     it("should handle skipping more items than available", async () => {
       const items = ["a", "b"];
       const iterator = createSimpleIterator(items);
-      
+
       const skipped = skip(iterator, 5);
       const result = await toArray(skipped);
-      
+
       expect(result).toEqual([]);
     });
 
     it("should handle zero skip count", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const skipped = skip(iterator, 0);
       const result = await toArray(skipped);
-      
+
       expect(result).toEqual(items);
     });
   });
@@ -1014,22 +1186,22 @@ describe("utility functions", () => {
     it("should reduce items to single value", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const result = await reduce(iterator, (acc, item) => acc + item, "");
-      
+
       expect(result).toBe("abc");
     });
 
     it("should provide index to reducer", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const result = await reduce(
-        iterator, 
-        (acc, item, index) => `${acc}${index}:${item}|`, 
-        ""
+        iterator,
+        (acc, item, index) => `${acc}${index}:${item}|`,
+        "",
       );
-      
+
       expect(result).toBe("0:a|1:b|2:c|");
     });
 
@@ -1051,12 +1223,16 @@ describe("utility functions", () => {
           errorPolicy: { type: "throw" },
         },
       );
-      
-      const result = await reduce(iterator, async (acc, item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
-        return acc + item;
-      }, 0);
-      
+
+      const result = await reduce(
+        iterator,
+        async (acc, item) => {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          return acc + item;
+        },
+        0,
+      );
+
       expect(result).toBe(6);
     });
   });
@@ -1065,39 +1241,39 @@ describe("utility functions", () => {
     it("should find first matching item", async () => {
       const items = ["apple", "banana", "cherry"];
       const iterator = createSimpleIterator(items);
-      
-      const result = await find(iterator, item => item.startsWith("b"));
-      
+
+      const result = await find(iterator, (item) => item.startsWith("b"));
+
       expect(result).toBe("banana");
     });
 
     it("should return undefined if no match found", async () => {
       const items = ["apple", "banana", "cherry"];
       const iterator = createSimpleIterator(items);
-      
-      const result = await find(iterator, item => item.startsWith("z"));
-      
+
+      const result = await find(iterator, (item) => item.startsWith("z"));
+
       expect(result).toBeUndefined();
     });
 
     it("should provide index to predicate", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const result = await find(iterator, (item, index) => index === 1);
-      
+
       expect(result).toBe("b");
     });
 
     it("should handle async predicates", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const result = await find(iterator, async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         return item === "c";
       });
-      
+
       expect(result).toBe("c");
     });
   });
@@ -1106,30 +1282,30 @@ describe("utility functions", () => {
     it("should return true if any item matches", async () => {
       const items = ["apple", "banana", "cherry"];
       const iterator = createSimpleIterator(items);
-      
-      const result = await some(iterator, item => item.length >= 6);
-      
+
+      const result = await some(iterator, (item) => item.length >= 6);
+
       expect(result).toBe(true);
     });
 
     it("should return false if no items match", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
-      const result = await some(iterator, item => item.length > 5);
-      
+
+      const result = await some(iterator, (item) => item.length > 5);
+
       expect(result).toBe(false);
     });
 
     it("should handle async predicates", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const result = await some(iterator, async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         return item === "b";
       });
-      
+
       expect(result).toBe(true);
     });
   });
@@ -1138,38 +1314,38 @@ describe("utility functions", () => {
     it("should return true if all items match", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
-      const result = await every(iterator, item => item.length === 1);
-      
+
+      const result = await every(iterator, (item) => item.length === 1);
+
       expect(result).toBe(true);
     });
 
     it("should return false if any item doesn't match", async () => {
       const items = ["a", "bb", "c"];
       const iterator = createSimpleIterator(items);
-      
-      const result = await every(iterator, item => item.length === 1);
-      
+
+      const result = await every(iterator, (item) => item.length === 1);
+
       expect(result).toBe(false);
     });
 
     it("should handle async predicates", async () => {
       const items = ["a", "b", "c"];
       const iterator = createSimpleIterator(items);
-      
+
       const result = await every(iterator, async (item) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         return typeof item === "string";
       });
-      
+
       expect(result).toBe(true);
     });
 
     it("should return true for empty iterables", async () => {
       const iterator = createSimpleIterator([]);
-      
+
       const result = await every(iterator, () => false);
-      
+
       expect(result).toBe(true);
     });
   });
@@ -1178,18 +1354,18 @@ describe("utility functions", () => {
     it("should allow chaining utilities", async () => {
       const items = ["apple", "banana", "cherry", "date", "elderberry"];
       const iterator = createSimpleIterator(items);
-      
+
       // Filter items longer than 5 chars, take first 2, and convert to uppercase
       const result = await toArray(
         take(
           map(
-            filter(iterator, item => item.length > 5),
-            item => item.toUpperCase()
+            filter(iterator, (item) => item.length > 5),
+            (item) => item.toUpperCase(),
           ),
-          2
-        )
+          2,
+        ),
       );
-      
+
       expect(result).toEqual(["BANANA", "CHERRY"]);
     });
 
@@ -1211,14 +1387,14 @@ describe("utility functions", () => {
           errorPolicy: { type: "throw" },
         },
       );
-      
+
       // Sum only even numbers
       const result = await reduce(
-        filter(iterator, n => n % 2 === 0),
+        filter(iterator, (n) => n % 2 === 0),
         (sum, n) => sum + n,
-        0
+        0,
       );
-      
+
       expect(result).toBe(12); // 2 + 4 + 6
     });
   });
@@ -1226,7 +1402,13 @@ describe("utility functions", () => {
 
 describe("fluent interface", () => {
   const createTestCallback = (items: string[]) => {
-    return async ({ limit, offset = 0 }: { limit: number; offset?: number }) => {
+    return async ({
+      limit,
+      offset = 0,
+    }: {
+      limit: number;
+      offset?: number;
+    }) => {
       const pageItems = items.slice(offset, offset + limit);
       return {
         items: pageItems,
@@ -1266,8 +1448,8 @@ describe("fluent interface", () => {
       });
 
       const result = await pagination
-        .filter(item => item.length > 4)
-        .map(item => item.toUpperCase())
+        .filter((item) => item.length > 4)
+        .map((item) => item.toUpperCase())
         .take(2)
         .toArray();
 
@@ -1282,8 +1464,8 @@ describe("fluent interface", () => {
         errorPolicy: { type: "throw" },
       });
 
-      const filtered = pagination.filter(item => item.length > 4);
-      
+      const filtered = pagination.filter((item) => item.length > 4);
+
       const result: string[] = [];
       for await (const item of filtered) {
         result.push(item.toUpperCase());
@@ -1305,7 +1487,13 @@ describe("fluent interface", () => {
         { id: 3, name: "Charlie", isActive: true },
       ];
 
-      const userCallback = async ({ limit, offset = 0 }: { limit: number; offset?: number }) => {
+      const userCallback = async ({
+        limit,
+        offset = 0,
+      }: {
+        limit: number;
+        offset?: number;
+      }) => {
         const pageItems = users.slice(offset, offset + limit);
         return {
           items: pageItems,
@@ -1318,8 +1506,8 @@ describe("fluent interface", () => {
         limit: 2,
         errorPolicy: { type: "throw" },
       })
-        .filter(user => user.isActive)
-        .map(user => user.name.toUpperCase())
+        .filter((user) => user.isActive)
+        .map((user) => user.name.toUpperCase())
         .toArray();
 
       expect(result).toEqual(["ALICE", "CHARLIE"]);
@@ -1348,7 +1536,7 @@ describe("fluent interface", () => {
         strategy: "offset",
         limit: 3,
         errorPolicy: { type: "throw" },
-      }).toMap(item => item);
+      }).toMap((item) => item);
       expect(map.get("a")).toBe("a");
       expect(map.size).toBe(4);
 
@@ -1356,21 +1544,21 @@ describe("fluent interface", () => {
         strategy: "offset",
         limit: 3,
         errorPolicy: { type: "throw" },
-      }).find(item => item === "c");
+      }).find((item) => item === "c");
       expect(found).toBe("c");
 
       const hasB = await paginate(createTestCallback(items), {
         strategy: "offset",
         limit: 3,
         errorPolicy: { type: "throw" },
-      }).some(item => item === "b");
+      }).some((item) => item === "b");
       expect(hasB).toBe(true);
 
       const allStrings = await paginate(createTestCallback(items), {
         strategy: "offset",
         limit: 3,
         errorPolicy: { type: "throw" },
-      }).every(item => typeof item === "string");
+      }).every((item) => typeof item === "string");
       expect(allStrings).toBe(true);
     });
 
@@ -1384,11 +1572,11 @@ describe("fluent interface", () => {
 
       const result = await pagination
         .filter(async (item) => {
-          await new Promise(resolve => setTimeout(resolve, 1));
+          await new Promise((resolve) => setTimeout(resolve, 1));
           return item !== "b";
         })
         .map(async (item) => {
-          await new Promise(resolve => setTimeout(resolve, 1));
+          await new Promise((resolve) => setTimeout(resolve, 1));
           return item.toUpperCase();
         })
         .toArray();
@@ -1398,7 +1586,13 @@ describe("fluent interface", () => {
 
     it("should work with complex chaining scenarios", async () => {
       const numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-      const callback = async ({ limit, offset = 0 }: { limit: number; offset?: number }) => {
+      const callback = async ({
+        limit,
+        offset = 0,
+      }: {
+        limit: number;
+        offset?: number;
+      }) => {
         const pageItems = numbers.slice(offset, offset + limit);
         return {
           items: pageItems,
@@ -1412,10 +1606,10 @@ describe("fluent interface", () => {
         limit: 3,
         errorPolicy: { type: "throw" },
       })
-        .filter(n => n % 2 === 0)  // [2, 4, 6, 8, 10]
-        .map(n => n * 2)           // [4, 8, 12, 16, 20]
-        .skip(2)                   // [12, 16, 20]
-        .take(2)                   // [12, 16]
+        .filter((n) => n % 2 === 0) // [2, 4, 6, 8, 10]
+        .map((n) => n * 2) // [4, 8, 12, 16, 20]
+        .skip(2) // [12, 16, 20]
+        .take(2) // [12, 16]
         .reduce((sum, n) => sum + n, 0);
 
       expect(result).toBe(28); // 12 + 16
@@ -1442,7 +1636,7 @@ describe("fluent interface", () => {
 
     it("should work with existing utility functions", async () => {
       const items = ["a", "b", "c"];
-      
+
       // Test with fresh pagination instance each time since iterators are consumed
       const pagination1 = paginate(createTestCallback(items), {
         strategy: "offset",
@@ -1460,7 +1654,7 @@ describe("fluent interface", () => {
         errorPolicy: { type: "throw" },
       });
 
-      const filtered = filter(pagination2, item => item !== "b");
+      const filtered = filter(pagination2, (item) => item !== "b");
       const filteredResult = await toArray(filtered);
       expect(filteredResult).toEqual(["a", "c"]);
     });
@@ -1469,7 +1663,7 @@ describe("fluent interface", () => {
       // Test that all the original pagination features still work
       const items = ["a", "b", "c", "d", "e"];
       let callCount = 0;
-      
+
       const callback = vi.fn(async ({ limit, offset = 0 }) => {
         callCount++;
         const pageItems = items.slice(offset, offset + limit);
@@ -1488,7 +1682,7 @@ describe("fluent interface", () => {
       });
 
       const result = await pagination.toArray();
-      
+
       expect(result).toEqual(items);
       expect(callback).toHaveBeenCalledTimes(3); // 3 pages needed
       expect(callback).toHaveBeenNthCalledWith(1, { limit: 2, offset: 0 });

@@ -27,6 +27,7 @@ export type ErrorPolicy =
 
 type OnPageOptions = {
   offset?: number;
+  page?: number;
   cursor?: string | number | null;
 };
 
@@ -44,13 +45,24 @@ export type PaginationHooks = {
 };
 
 /**
- * Offset-based pagination options
+ * Offset-based pagination options (0-indexed)
  */
 export type OffsetPaginationOptions = {
   strategy: "offset";
   limit: number;
   errorPolicy: ErrorPolicy;
   initialOffset?: number | null;
+  hooks?: PaginationHooks;
+};
+
+/**
+ * Page-based pagination options (1-indexed)
+ */
+export type PagePaginationOptions = {
+  strategy: "page";
+  limit: number;
+  errorPolicy: ErrorPolicy;
+  initialPage?: number | null;
   hooks?: PaginationHooks;
 };
 
@@ -67,6 +79,7 @@ export type CursorPaginationOptions = {
 
 export type PaginationOptions =
   | OffsetPaginationOptions
+  | PagePaginationOptions
   | CursorPaginationOptions;
 
 export type PageInfo = {
@@ -79,10 +92,29 @@ export type PaginatedResult<T> = {
   pageInfo: PageInfo;
 };
 
-// Type for the callback function that fetches data
+// Type for the callback function that fetches data with offset strategy
+export type OffsetPaginationCallback<T> = (params: {
+  limit: number;
+  offset: number;
+}) => Promise<PaginatedResult<T>>;
+
+// Type for the callback function that fetches data with page strategy
+export type PagePaginationCallback<T> = (params: {
+  limit: number;
+  page: number;
+}) => Promise<PaginatedResult<T>>;
+
+// Type for the callback function that fetches data with cursor strategy
+export type CursorPaginationCallback<T> = (params: {
+  limit: number;
+  cursor: string | null;
+}) => Promise<PaginatedResult<T>>;
+
+// Legacy type for backward compatibility
 export type PaginationCallback<T> = (params: {
   limit: number;
   offset?: number;
+  page?: number;
   cursor?: string | null;
 }) => Promise<PaginatedResult<T>>;
 
@@ -98,11 +130,15 @@ export class FluentAsyncIterable<T> implements AsyncIterable<T> {
   }
 
   // Lazy transformation methods (return new FluentAsyncIterable)
-  filter(predicate: (item: T, index: number) => boolean | Promise<boolean>): FluentAsyncIterable<T> {
+  filter(
+    predicate: (item: T, index: number) => boolean | Promise<boolean>,
+  ): FluentAsyncIterable<T> {
     return new FluentAsyncIterable(filter(this.iterable, predicate));
   }
 
-  map<U>(transform: (item: T, index: number) => U | Promise<U>): FluentAsyncIterable<U> {
+  map<U>(
+    transform: (item: T, index: number) => U | Promise<U>,
+  ): FluentAsyncIterable<U> {
     return new FluentAsyncIterable(map(this.iterable, transform));
   }
 
@@ -127,29 +163,40 @@ export class FluentAsyncIterable<T> implements AsyncIterable<T> {
     return toMap(this.iterable, keyFn);
   }
 
-  async forEach(fn: (item: T, index: number) => void | Promise<void>): Promise<void> {
+  async forEach(
+    fn: (item: T, index: number) => void | Promise<void>,
+  ): Promise<void> {
     return forEach(this.iterable, fn);
   }
 
-  async reduce<U>(reducer: (accumulator: U, item: T, index: number) => U | Promise<U>, initialValue: U): Promise<U> {
+  async reduce<U>(
+    reducer: (accumulator: U, item: T, index: number) => U | Promise<U>,
+    initialValue: U,
+  ): Promise<U> {
     return reduce(this.iterable, reducer, initialValue);
   }
 
-  async find(predicate: (item: T, index: number) => boolean | Promise<boolean>): Promise<T | undefined> {
+  async find(
+    predicate: (item: T, index: number) => boolean | Promise<boolean>,
+  ): Promise<T | undefined> {
     return find(this.iterable, predicate);
   }
 
-  async some(predicate: (item: T, index: number) => boolean | Promise<boolean>): Promise<boolean> {
+  async some(
+    predicate: (item: T, index: number) => boolean | Promise<boolean>,
+  ): Promise<boolean> {
     return some(this.iterable, predicate);
   }
 
-  async every(predicate: (item: T, index: number) => boolean | Promise<boolean>): Promise<boolean> {
+  async every(
+    predicate: (item: T, index: number) => boolean | Promise<boolean>,
+  ): Promise<boolean> {
     return every(this.iterable, predicate);
   }
 }
 
 /**
- * Internal async generator for paginating through data using either offset or cursor-based pagination
+ * Internal async generator for paginating through data using offset, page, or cursor-based pagination
  */
 async function* paginateGenerator<T>(
   callback: PaginationCallback<T>,
@@ -158,17 +205,28 @@ async function* paginateGenerator<T>(
   const { limit } = options;
 
   let consecutiveErrorCount = 0;
-  let currentOffset =
-    (options.strategy === "offset" ? options.initialOffset : 0) ?? 0;
-  let currentCursor =
-    options.strategy === "cursor" ? options.initialCursor : null;
+  let currentOffset = 0;
+  let currentPage = 1;
+  let currentCursor = null;
+
+  // Initialize based on strategy
+  if (options.strategy === "offset") {
+    currentOffset = options.initialOffset ?? 0;
+  } else if (options.strategy === "page") {
+    currentPage = options.initialPage ?? 1;
+    currentOffset = (currentPage - 1) * limit;
+  } else {
+    // options.strategy === "cursor"
+    currentCursor = options.initialCursor;
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- we make sure to have yeild and break conditions here
   while (true) {
     if (options.hooks?.onPage) {
       await options.hooks.onPage({
-        offset: currentOffset,
-        cursor: currentCursor,
+        offset: options.strategy === "offset" ? currentOffset : undefined,
+        page: options.strategy === "page" ? currentPage : undefined,
+        cursor: options.strategy === "cursor" ? currentCursor : undefined,
       });
     }
 
@@ -176,7 +234,9 @@ async function* paginateGenerator<T>(
       limit,
       ...(options.strategy === "offset"
         ? { offset: currentOffset }
-        : { cursor: currentCursor }),
+        : options.strategy === "page"
+          ? { page: currentPage }
+          : { cursor: currentCursor }),
     };
 
     try {
@@ -191,6 +251,9 @@ async function* paginateGenerator<T>(
 
       if (options.strategy === "offset") {
         currentOffset += limit;
+      } else if (options.strategy === "page") {
+        currentPage += 1;
+        currentOffset = (currentPage - 1) * limit;
       } else {
         currentCursor = result.pageInfo.nextCursor;
       }
@@ -256,9 +319,12 @@ async function* paginateGenerator<T>(
           await options.hooks?.onReturn?.();
           return; // Break the loop if error policy is break
         case "continue":
-          // For offset strategy, still increment the offset to avoid getting stuck
+          // For offset and page strategies, still increment to avoid getting stuck
           if (options.strategy === "offset") {
             currentOffset += limit;
+          } else if (options.strategy === "page") {
+            currentPage += 1;
+            currentOffset = (currentPage - 1) * limit;
           }
           continue;
       }
@@ -266,52 +332,126 @@ async function* paginateGenerator<T>(
   }
 }
 
+// Overloads
+
 /**
- * Creates a fluent async iterable for paginating through data using either offset or cursor-based pagination
+ * Creates a fluent async iterable for paginating through data using offset-based pagination (0-indexed)
+ * @param callback Function that fetches paginated data with offset parameter
+ * @param options Offset pagination configuration options
+ * @returns FluentAsyncIterable that can be used with for-await loops or fluent methods
+ */
+export function paginate<T>(
+  callback: OffsetPaginationCallback<T>,
+  options: OffsetPaginationOptions,
+): FluentAsyncIterable<T>;
+
+/**
+ * Creates a fluent async iterable for paginating through data using page-based pagination (1-indexed)
+ * @param callback Function that fetches paginated data with page parameter
+ * @param options Page pagination configuration options
+ * @returns FluentAsyncIterable that can be used with for-await loops or fluent methods
+ */
+export function paginate<T>(
+  callback: PagePaginationCallback<T>,
+  options: PagePaginationOptions,
+): FluentAsyncIterable<T>;
+
+/**
+ * Creates a fluent async iterable for paginating through data using cursor-based pagination
+ * @param callback Function that fetches paginated data with cursor parameter
+ * @param options Cursor pagination configuration options
+ * @returns FluentAsyncIterable that can be used with for-await loops or fluent methods
+ */
+export function paginate<T>(
+  callback: CursorPaginationCallback<T>,
+  options: CursorPaginationOptions,
+): FluentAsyncIterable<T>;
+
+/**
+ * Creates a fluent async iterable for paginating through data using offset, page, or cursor-based pagination
  * @param callback Function that fetches paginated data
  * @param options Pagination configuration options
  * @returns FluentAsyncIterable that can be used with for-await loops or fluent methods
  *
  * @example
- * // Traditional async iteration
- * for await (const item of paginate(callback, options)) {
+ * // Traditional async iteration with offset (0-indexed)
+ * for await (const item of paginate(callback, { strategy: "offset", limit: 10, errorPolicy: { type: "throw" } })) {
  *   console.log(item);
  * }
- * 
+ *
+ * // Page-based pagination (1-indexed)
+ * for await (const item of paginate(callback, { strategy: "page", limit: 10, initialPage: 1, errorPolicy: { type: "throw" } })) {
+ *   console.log(item);
+ * }
+ *
  * // Fluent interface
  * const items = await paginate(callback, options)
  *   .filter(item => item.isActive)
  *   .map(item => item.name.toUpperCase())
  *   .take(10)
  *   .toArray();
- * 
+ *
  * // Mixed usage
  * const activeUsers = paginate(getUsersCallback, options)
  *   .filter(user => user.isActive);
- * 
+ *
  * for await (const user of activeUsers) {
  *   await processUser(user);
  * }
  */
 export function paginate<T>(
-  callback: PaginationCallback<T>,
+  callback:
+    | OffsetPaginationCallback<T>
+    | PagePaginationCallback<T>
+    | CursorPaginationCallback<T>,
   options: PaginationOptions,
 ): FluentAsyncIterable<T> {
-  return new FluentAsyncIterable(paginateGenerator(callback, options));
+  // Create an adapter that converts the specific callback to the generic one
+  const adaptedCallback: PaginationCallback<T> = async (params) => {
+    switch (options.strategy) {
+      case "offset": {
+        const offsetCallback = callback as OffsetPaginationCallback<T>;
+        return await offsetCallback({
+          limit: params.limit,
+          offset: params.offset ?? 0,
+        });
+      }
+      case "page": {
+        const pageCallback = callback as PagePaginationCallback<T>;
+        return await pageCallback({
+          limit: params.limit,
+          page: params.page ?? 1,
+        });
+      }
+      case "cursor": {
+        const cursorCallback = callback as CursorPaginationCallback<T>;
+        return await cursorCallback({
+          limit: params.limit,
+          cursor: params.cursor ?? null,
+        });
+      }
+      default: {
+        // This should never happen due to TypeScript's exhaustive checking
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const _exhaustiveCheck: never = options;
+        throw new Error("Unhandled pagination strategy");
+      }
+    }
+  };
+
+  return new FluentAsyncIterable(paginateGenerator(adaptedCallback, options));
 }
 
 /**
  * Collects all items from an async iterable into an array
  * @param iterable The async iterable to collect from
  * @returns Promise that resolves to an array containing all items
- * 
+ *
  * @example
  * const items = await toArray(paginate(callback, options));
  * console.log(items); // ['item1', 'item2', ...]
  */
-export async function toArray<T>(
-  iterable: AsyncIterable<T>,
-): Promise<T[]> {
+export async function toArray<T>(iterable: AsyncIterable<T>): Promise<T[]> {
   const result: T[] = [];
   for await (const item of iterable) {
     result.push(item);
@@ -323,14 +463,12 @@ export async function toArray<T>(
  * Collects all unique items from an async iterable into a Set
  * @param iterable The async iterable to collect from
  * @returns Promise that resolves to a Set containing all unique items
- * 
+ *
  * @example
  * const uniqueItems = await toSet(paginate(callback, options));
  * console.log(uniqueItems.size); // Number of unique items
  */
-export async function toSet<T>(
-  iterable: AsyncIterable<T>,
-): Promise<Set<T>> {
+export async function toSet<T>(iterable: AsyncIterable<T>): Promise<Set<T>> {
   const result = new Set<T>();
   for await (const item of iterable) {
     result.add(item);
@@ -343,7 +481,7 @@ export async function toSet<T>(
  * @param iterable The async iterable to collect from
  * @param keyFn Function that extracts/generates a key for each item
  * @returns Promise that resolves to a Map with keys generated by keyFn
- * 
+ *
  * @example
  * const userMap = await toMap(
  *   paginate(getUsersCallback, options),
@@ -368,7 +506,7 @@ export async function toMap<T, K>(
  * @param iterable The async iterable to iterate over
  * @param fn Function to execute for each item
  * @returns Promise that resolves when all items have been processed
- * 
+ *
  * @example
  * await forEach(paginate(callback, options), async (item) => {
  *   await processItem(item);
@@ -389,7 +527,7 @@ export async function forEach<T>(
  * @param iterable The async iterable to filter
  * @param predicate Function to test each item
  * @returns Async iterable containing only items that pass the test
- * 
+ *
  * @example
  * const activeUsers = filter(
  *   paginate(getUsersCallback, options),
@@ -413,7 +551,7 @@ export async function* filter<T>(
  * @param iterable The async iterable to transform
  * @param transform Function to transform each item
  * @returns Async iterable containing transformed items
- * 
+ *
  * @example
  * const userEmails = map(
  *   paginate(getUsersCallback, options),
@@ -435,7 +573,7 @@ export async function* map<T, U>(
  * @param iterable The async iterable to take from
  * @param count Number of items to take
  * @returns Async iterable containing at most count items
- * 
+ *
  * @example
  * const first10 = take(paginate(callback, options), 10);
  */
@@ -444,7 +582,7 @@ export async function* take<T>(
   count: number,
 ): AsyncIterable<T> {
   if (count <= 0) return;
-  
+
   let taken = 0;
   for await (const item of iterable) {
     yield item;
@@ -457,7 +595,7 @@ export async function* take<T>(
  * @param iterable The async iterable to skip from
  * @param count Number of items to skip
  * @returns Async iterable containing items after skipping count items
- * 
+ *
  * @example
  * const afterFirst10 = skip(paginate(callback, options), 10);
  */
@@ -478,7 +616,7 @@ export async function* skip<T>(
  * @param reducer Function that combines accumulator with each item
  * @param initialValue Initial value for the accumulator
  * @returns Promise that resolves to the final accumulated value
- * 
+ *
  * @example
  * const total = await reduce(
  *   paginate(getOrdersCallback, options),
@@ -504,7 +642,7 @@ export async function reduce<T, U>(
  * @param iterable The async iterable to search
  * @param predicate Function to test each item
  * @returns Promise that resolves to the first matching item or undefined
- * 
+ *
  * @example
  * const adminUser = await find(
  *   paginate(getUsersCallback, options),
@@ -529,7 +667,7 @@ export async function find<T>(
  * @param iterable The async iterable to test
  * @param predicate Function to test each item
  * @returns Promise that resolves to true if any item matches
- * 
+ *
  * @example
  * const hasActiveUser = await some(
  *   paginate(getUsersCallback, options),
@@ -554,7 +692,7 @@ export async function some<T>(
  * @param iterable The async iterable to test
  * @param predicate Function to test each item
  * @returns Promise that resolves to true if all items match
- * 
+ *
  * @example
  * const allUsersActive = await every(
  *   paginate(getUsersCallback, options),
